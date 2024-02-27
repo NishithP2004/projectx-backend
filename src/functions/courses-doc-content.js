@@ -4,6 +4,7 @@ const {
     ObjectId
 } = require('mongodb');
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai')
+// const tokenizer = require('gpt-tokenizer')
 
 require('dotenv').config({
     path: ".env"
@@ -18,11 +19,7 @@ async function formatDocument(document) {
         const model = new ChatGoogleGenerativeAI({
             apiKey: process.env.GOOGLE_PALM_API_KEY,
             temperature: 0.2,
-            modelName: "gemini-pro",
-            maxOutputTokens: 2048,
-            candidate_count: 1,
-            top_k: 40,
-            top_p: 0.95
+            modelName: "gemini-pro"
         })
 
         const prompt = `
@@ -65,7 +62,11 @@ async function getDocumentContent(doc_id, user) {
         console.log(doc)
         if(!doc.content) throw { message: "Requested document Not Found", status: 404 }
 
-        return doc?.content || null;
+        return {
+            content: doc.content,
+            summary: doc.summary
+        };
+
     } catch (err) {
         if (err) {
             console.error(err)
@@ -80,6 +81,7 @@ app.http('courses-doc-content', {
     route: "courses/documents/{id}",
     handler: async (request, context) => {
         context.log(`Http function processed request for url "${request.url}"`);
+        // const MAX_TOKENS = parseInt(process.env.MAX_TOKENS) || 2048;
 
         let status = 200,
             res;
@@ -109,11 +111,22 @@ app.http('courses-doc-content', {
                     })
                 console.log(user.uid)
 
-                let content = await getDocumentContent(doc_id, user.uid);
-                let formatted = await formatDocument(content)
+                /* let content = await getDocumentContent(doc_id, user.uid);
+                let formatted;
+                const tokens = tokenizer.encode(content);
+                console.log(tokenizer.isWithinTokenLimit(tokens, MAX_TOKENS))
+                if(tokenizer.isWithinTokenLimit(tokens, MAX_TOKENS)) {
+                    formatted = await formatDocument(content)
+                } else {
+                    formatted = content
+                } */
+
+                let doc = await getDocumentContent(doc_id, user.uid);
+
                 res = {
                     success: true,
-                    content: formatted
+                    content: await formatDocument(doc.content),
+                    summary: doc.summary
                 }
             } catch (err) {
                 if (err) {
@@ -141,3 +154,5 @@ app.http('courses-doc-content', {
         };
     }
 });
+
+module.exports = getDocumentContent

@@ -27,6 +27,7 @@ async function cleanup(md) {
             When given the markdown representation of a website, you can intelligently identify the irrelevant parts of the page like headers, footers, navlinks, etc and filter them out to return the main content as a markdown file. 
             Make the content look neat and presentable.
             The main idea is to provide a clutter free representation of a website for educational purposes.
+            Return a rich markdown file as the output.
     INPUT: 
             ${md}
     `
@@ -45,7 +46,7 @@ async function getPageContent(url) {
         const browser = await puppeteer.launch({
             executablePath: "chrome-linux/chrome",
             args: ['--no-sandbox'],
-            headless: true
+            headless: "new"
         })
         const page = await browser.newPage();
         await page.goto(url, {

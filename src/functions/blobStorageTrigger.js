@@ -4,7 +4,10 @@ const {
 const {
     AzureKeyCredential,
     DocumentAnalysisClient
-} = require("@azure/ai-form-recognizer")
+} = require("@azure/ai-form-recognizer");
+const {
+    BlobServiceClient
+} = require("@azure/storage-blob");
 const {
     RecursiveCharacterTextSplitter
 } = require('langchain/text_splitter')
@@ -20,15 +23,26 @@ const {
 const {
     Document
 } = require('langchain/document');
+const {
+    loadSummarizationChain
+} = require("langchain/chains")
 require('dotenv').config({
     path: ".env"
 })
+const {
+    ChatGoogleGenerativeAI
+} = require('@langchain/google-genai')
 
-async function analyseDocument(docUrl) {
+const model = new ChatGoogleGenerativeAI({
+    apiKey: process.env.GOOGLE_PALM_API_KEY,
+    modelName: "gemini-pro"
+})
+
+async function analyzeDocument(docUrl) {
     try {
         console.log(docUrl)
         const client = new DocumentAnalysisClient(process.env.AZURE_FR_ENDPOINT, new AzureKeyCredential(process.env.AZURE_FR_KEY));
-        const poller = await client.beginAnalyzeDocument("prebuilt-read", docUrl);
+        const poller = await client.beginAnalyzeDocument("prebuilt-layout", docUrl);
 
         const {
             content,
@@ -47,7 +61,7 @@ async function analyseDocument(docUrl) {
     } catch (err) {
         if (err) {
             console.error(err);
-            return null;
+            throw err;
         }
     }
 }
@@ -109,6 +123,26 @@ async function saveDocumentContent(content, metadata) {
                     textKey: "text"
                 })
 
+                // Generating a summary
+                const chain = loadSummarizationChain(model, {
+                    type: "map_reduce"
+                })
+
+                const summary = (await chain.call({
+                    input_documents: documents
+                })).text
+
+                await collection.updateOne({
+                    _id: res.insertedId
+                }, {
+                    $set: {
+                        summary
+                    }
+                }, {
+                    upsert: false,
+                    session
+                })
+
                 await vectorStore.addDocuments(documents)
                 await session.commitTransaction();
             })
@@ -119,7 +153,7 @@ async function saveDocumentContent(content, metadata) {
         if (err) {
             console.error(err);
             await session.abortTransaction();
-            return null;
+            throw err;
         }
     } finally {
         await session.endSession()
@@ -128,6 +162,17 @@ async function saveDocumentContent(content, metadata) {
 
 }
 
+async function deleteBlobIfItExists(blobName) {
+    const blobServiceClient = BlobServiceClient.fromConnectionString(process.env.AZURE_STORAGE_CONNECTION_STRING)
+    const container = process.env.AZURE_STORAGE_CONTAINER_NAME;
+    const containerClient = blobServiceClient.getContainerClient(container);
+
+    const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+    await blockBlobClient.deleteIfExists({
+        deleteSnapshots: "include"
+    });
+    console.log(`deleted blob ${blobName}`);
+}
 
 app.storageBlob('storageBlobTrigger1', {
     path: 'documents/{name}',
@@ -135,22 +180,33 @@ app.storageBlob('storageBlobTrigger1', {
     handler: async (blob, context) => {
         let triggerMetadata = context.triggerMetadata;
         const docUrl = context.triggerMetadata.uri;
-        const metadata = {
-            user: triggerMetadata.metadata.user_uid,
-            course: {
-                name: triggerMetadata.metadata.course_name,
-                id: triggerMetadata.metadata.course_id
-            },
-            blob: {
-                name: triggerMetadata.name,
-                uri: triggerMetadata.uri
+
+        try {
+            const metadata = {
+                user: triggerMetadata.metadata.user_uid,
+                course: {
+                    name: triggerMetadata.metadata.course_name,
+                    id: triggerMetadata.metadata.course_id
+                },
+                blob: {
+                    name: triggerMetadata.name,
+                    uri: triggerMetadata.uri
+                }
+            }
+            let content = await analyzeDocument(docUrl)
+            if (content)
+                await saveDocumentContent(content, metadata)
+            else {
+                console.log("No Content");
+                await deleteBlobIfItExists(triggerMetadata.name)
+            }
+        } catch (err) {
+            if(err) {
+                console.error(err);
+                await deleteBlobIfItExists(triggerMetadata.name)
             }
         }
-        let content = await analyseDocument(docUrl)
-        if (content)
-            await saveDocumentContent(content, metadata)
-        else
-            console.log("No Content")
+
         context.log(`Storage blob function processed blob "${context.triggerMetadata.name}" with size ${blob.length} bytes`);
     }
 });

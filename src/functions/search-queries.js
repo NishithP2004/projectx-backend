@@ -9,6 +9,9 @@ const {
     GoogleVertexAI
 } = require('langchain/llms/googlevertexai')
 
+const getDocumentContent = require('./courses-doc-content');
+const admin = require('firebase-admin');
+
 async function generateQueries(content) {
     try {
         const modelname = 'text-bison-32k';
@@ -19,8 +22,9 @@ async function generateQueries(content) {
 
         const prompt =
             `
-        SYSTEM: You are an inteligent document reader which can identify essential keywords and topics from a given document and generate search queries for the web which can be used to query additional information from engines like Google and YouTube.
+        SYSTEM: You are an inteligent document reader which can identify essential keywords and topics from a given document summary and generate search queries for the web which can be used to query additional information from engines like Google and YouTube.
                 The same can be used for educational purposes to receive curated content on a said topic (Additional References).
+                Do not return a code block.
                 Return the result as follows (atmost 10 different search queries) as a *JSON object* in *plain text* format:
                 {
                     queries: [
@@ -57,21 +61,61 @@ app.http('search-queries', {
                 }
             }
         } else {
-            let content = (await request.json()).content;
-            let status, res;
+            let body = await request.json();
+            let content = body.content;
+            let doc_id = body.doc_id;
+            let token = request.headers.get("Authorization");
+            console.log(body)
 
-            if (content) {
-                res = {
-                    success: true,
-                    queries: (await generateQueries(content)).queries
+            let status = 200,
+                res;
+
+            if ((token && doc_id) || (token && content)) {
+                token = token.split(" ")[1].trim();
+                try {
+                    let user = await admin.auth().verifyIdToken(token)
+                        .catch(err => {
+                            if (err) {
+                                status = 403;
+                                res = {
+                                    success: false,
+                                    error: "Forbidden"
+                                }
+
+                                return {
+                                    body: JSON.stringify(res),
+                                    status,
+                                    headers: {
+                                        'Content-Type': 'application/json'
+                                    }
+                                };
+                            }
+                        })
+                    console.log(user.uid)
+
+                    let doc;
+                    if (doc_id)
+                        doc = await getDocumentContent(doc_id, user.uid);
+
+                    res = {
+                        success: true,
+                        queries: (await generateQueries(content || doc.summary || doc.content)).queries
+                    }
+                } catch (err) {
+                    if (err) {
+                        res = {
+                            success: false,
+                            error: err.message
+                        }
+                        status = err.status || 500;
+                    }
                 }
-                status = 200;
             } else {
                 res = {
-                    error: "Bad Request",
-                    success: false
+                    success: false,
+                    error: (!token) ? "Unauthorized" : "Bad Request"
                 }
-                status = 400;
+                status = (!token) ? 401 : 400;
             }
 
             return {
